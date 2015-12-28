@@ -1,0 +1,130 @@
+***************************************************
+sys_xcrypt Loadable kernel module
+***************************************************
+--------------
+Functionality: 
+--------------
+
+The module receives the name of the input file.
+Encrypts/Decrypts the content using AES 128 bit (CBC) and puts the decrypted/encrypted content into the output file specified 
+by the user. The user also specifies the key(for encryption/decryption) and the length of the key. 
+However, as the module only supports 128 bit, if the user provides a higher key length the key is truncated to 16 bytes.
+
+-------------------------------------------
+Data validation and additional checks made:
+-------------------------------------------
+* Checks for null arguments of all input data provided for each function call
+* Checks for missing arguments or bad values of data
+* Checks if the user provided a key of less than 16 bytes
+* Checks if the buffer and key length do not match
+* Checks if the input/output file paths exceed PATH_MAX
+* Checks if the file paths represent directories
+* Checks the permissions of input and output file
+* Checks if the input and output files are same ( inode and superblock comparison) 
+* Check if the decryption key is incorrect
+
+--------------
+Padding Logic:
+--------------
+* The padding logic is borrowed from net/ceph/crypto.c. It employs a beautiful padding mechanism which avoids having a pad section in preamble.
+
+The last 4 bits of the source length are taken and subtracted from 16.
+Consider a data of size: 28
+Its binary representation is: 0001 1100
+The last 4 bits are: 1100 
+if we subtract from 16 : 0001 0000 - 0000 1100
+We get: 0100 = 4 in decimal
+
+We now know how much we need to pad. We have to pad 4 bytes. The beauty is to pad 4 bytes of data with 4. During decryption, we read
+the last byte which gives us the number of pad bytes added and we move back those many number of bytes to get to the source.
+Now, what if the data is a multiple of 16. As with the algorithm, the last 4 bits are zeros and we pad 16 bytes with data 16.
+When we decrypt we move back 16 bytes.
+
+---------------------------
+Behaviour in special cases: 
+---------------------------
+
+case1: User provides a key length greater than 16
+Result: Key is truncated to 16 bytes
+
+case2: User provides an output file which exists
+Result: The output file is overwritten
+
+case3: Encryption/Decryption fails midway
+Result: All the output is written to a temporary file. This temporary file is deleted if anything fails midway.
+        If everything is successful, the temporary file is renamed to output file.
+        
+case4: Decryption key is wrong
+Result: return error and delete the temporary file.
+
+case5: Input file is empty for encryption
+Result: The contents of the decrypted file is also empty
+
+---------------------
+Preamble:
+---------------------
+
+The preamble consists of only the hashed password which is used to check if the decryption key provided is correct.
+The pad section is avoided due to the padding logic discussed above. The padding logic is encoded in the encrypted text.
+After decryption it is read and appropriate actions are performed.
+
+---------------------
+Return Codes:
+---------------------
+EINVAL:  When the arguments are null/ inappropriate/ incorrect ( bad key passed)
+EFAULT: When a bad address is encountered
+EPERM: When a required operation fails ( renaming of file, Deletion of file, creation of file) due to a permission issue.
+EIO: When the read/ write to the files fails ( during the encryption/ decryption process)
+EISDIR: When an operation is required to be performed on something else other than a directory. ( Input/ output files cannot be directories)
+
+---------------------------------------------------
+Extra Credit:  Initialization vector randomization
+---------------------------------------------------
+
+Every page of data encrypted, uses a different initialization vector. It is calculated as follows:
+
+Let X be a temporary hardcoded initialization vector.  The page number is also converted to a string Y.
+new string Z =  X + Y
+the initialization vector used is md5Digest(Z) which is 16 byte in length.
+ 
+------------------
+Code Structure:
+------------------
+sys_crypt.h: header file that holds the structure of the arguments
+sys_crypt.c: All the kernel logic
+xcipher.c: User code that accesses the system call
+kernel.config: config file that was used to configure the kernel on which this system call is deployed
+MakeFile: That compiles xcipher and xcrypt module.
+
+NOTE: Though the code employs printk's liberally and also prints sensitive data in the kernel logs,
+this is only meant for debugging purposes and I do not intend to add it in production code.
+
+The code comprises of the following functions:
+isArgsValid() : checks if the user passed arguments are valid memory locations and accessible
+copyFromUserland(): Copies arguments from user space to kernel space
+sys_xcrypt():
+ - checkInputFile(): check if input file is valid and is not a directory and has required permissions 
+ - isIpFileEqualsOpFile(): check if input and output file are same
+ - checkOutputFile(): check if output file is valid and is not a directory and has required permissions
+ - isDir(): check if a file struct is directory
+ doxcrypt():
+ - calculate_md5(): calculate the digest of the key buffer
+ - doEncrypt(): encrypt if the flag is 1
+ - doDecrypt(): decrypt if the flag is 0
+aes_encrypt() : function that encrypts data
+aes_decrypt() : function that decrypts data
+getAESinstantiationVector(): Returns a instantiation vector for every block of data encrypted/decrypted
+deleteFile() : deletes a file
+doRename(): renames a file 
+ 
+------------------------------------------------
+References:
+------------------------------------------------
+* http://lxr.free-electrons.com/source/fs/namei.c#L3762
+* http://lxr.free-electrons.com/source/net/ceph/crypto.c
+* http://lxr.free-electrons.com/source/fs/ecryptfs/crypto.c
+* http://stackoverflow.com/questions/6059528/want-an-example-for-using-aes-encryption-method-in-kernel-version-above-or-equal
+* wrapfs_read call provided in hw1.txt
+* http://stackoverflow.com/questions/6515227/source-code-example-from-linux-kernel-programming
+* http://www.cs.bham.ac.uk/~exr/lectures/opsys/14_15/docs/kernelAPI/r4081.html
+* http://www.ibm.com/developerworks/library/l-kernel-memory-access/
